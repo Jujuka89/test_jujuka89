@@ -1,58 +1,51 @@
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from datetime import timedelta, datetime
-from .const import DOMAIN, DEFAULT_BASE_TEMP
-
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.event import track_time_interval
+from datetime import timedelta
 import statistics
+from .const import DEFAULT_SCAN_INTERVAL, DEFAULT_BASE_TEMP
+from homeassistant.util import dt as dt_util
 
-SCAN_INTERVAL = timedelta(minutes=10)
-
-
-async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
-
-    outdoor_entity = config.get("outdoor_sensor")
+def setup_platform(hass, config, add_entities, discovery_info=None):
+    outdoor_sensor = config.get("outdoor_sensor")
     base_temp = config.get("base_temperature", DEFAULT_BASE_TEMP)
+    add_entities([DJUSensor(hass, outdoor_sensor, base_temp)])
 
-    async_add_entities([DJUSensor(hass, outdoor_entity, base_temp)])
 
-
-class DJUSensor(SensorEntity, RestoreEntity):
-
-    def __init__(self, hass, outdoor_entity, base_temp):
+class DJUSensor(Entity):
+    def __init__(self, hass, outdoor_sensor, base_temp):
         self._hass = hass
-        self._outdoor_entity = outdoor_entity
+        self._outdoor_sensor = outdoor_sensor
         self._base_temp = base_temp
-        self._attr_name = "DJU Jour"
-        self._attr_unit_of_measurement = "°C"
         self._temperatures = []
         self._state = 0
+        self._last_day = dt_util.now().date()
+        track_time_interval(hass, self.update, timedelta(seconds=DEFAULT_SCAN_INTERVAL))
 
-    async def async_added_to_hass(self):
-        async_track_time_interval(
-            self._hass, self.update_dju, SCAN_INTERVAL
-        )
-
-    async def update_dju(self, now):
-        state = self._hass.states.get(self._outdoor_entity)
-
-        if state and state.state not in ("unknown", "unavailable"):
-            temp = float(state.state)
-            self._temperatures.append(temp)
-
-        # garde uniquement 24h (144 mesures de 10 min)
-        if len(self._temperatures) > 144:
-            self._temperatures.pop(0)
-
-        if self._temperatures:
-            moyenne = statistics.mean(self._temperatures)
-            dju = max(0, self._base_temp - moyenne)
-            self._state = round(dju, 2)
-
-        self.async_write_ha_state()
+    @property
+    def name(self):
+        return "DJU Journalier"
 
     @property
     def state(self):
         return self._state
+
+    @property
+    def unit_of_measurement(self):
+        return "°C"
+
+    def update(self, now):
+        current_day = dt_util.now().date()
+        # Reset à minuit
+        if current_day != self._last_day:
+            self._temperatures = []
+            self._state = 0
+            self._last_day = current_day
+
+        state = self._hass.states.get(self._outdoor_sensor)
+        if state and state.state not in ("unknown", "unavailable"):
+            temp = float(state.state)
+            self._temperatures.append(temp)
+
+        if self._temperatures:
+            moyenne = statistics.mean(self._temperatures)
+            self._state = round(max(0, self._base_temp - moyenne), 2)
