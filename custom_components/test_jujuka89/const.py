@@ -3,7 +3,5 @@
 from homeassistant.const import Platform
 
 DOMAIN = "dju"
-PLATFORMS: list[Platform] = [Platform.SENSOR]
-
 DEFAULT_BASE_TEMP = 18.0
 
