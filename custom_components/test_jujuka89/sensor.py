@@ -1,70 +1,58 @@
-""" Implements the Tuto HACS sensors component """
-import logging
-
-from homeassistant.const import UnitOfTime
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.sensor import (
-    SensorEntity,
-    SensorDeviceClass,
-    SensorStateClass,
-)
+from datetime import timedelta, datetime
+from .const import DOMAIN, DEFAULT_BASE_TEMP
 
-from homeassistant.helpers.entity import DeviceInfo, DeviceEntryType
+import statistics
 
-from .const import DOMAIN, DEVICE_MANUFACTURER, CONF_DEVICE_ID, CONF_NAME
-
-_LOGGER = logging.getLogger(__name__)
+SCAN_INTERVAL = timedelta(minutes=10)
 
 
-async def async_setup_platform(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info=None,  # pylint: disable=unused-argument
-):
-    """Configuration de la plate-forme tuto_hacs à partir de la configuration
-    trouvée dans configuration.yaml"""
+async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
 
-    _LOGGER.debug("Calling async_setup_entry entry=%s", entry)
+    outdoor_entity = config.get("outdoor_sensor")
+    base_temp = config.get("base_temperature", DEFAULT_BASE_TEMP)
 
-    entity = TutoHacsElapsedSecondEntity(hass, entry)
-    async_add_entities([entity], True)
+    async_add_entities([DJUSensor(hass, outdoor_entity, base_temp)])
 
 
-class TutoHacsElapsedSecondEntity(SensorEntity):
-    """La classe de l'entité TutoHacs"""
+class DJUSensor(SensorEntity, RestoreEntity):
 
-    def __init__(
-        self,
-        hass: HomeAssistant,  # pylint: disable=unused-argument
-        entry_infos,  # pylint: disable=unused-argument
-    ) -> None:
-        """Initisalisation de notre entité"""
-        self._attr_has_entity_name = True
-        self._attr_name = entry_infos.get(CONF_NAME)
-        self._device_id = entry_infos.get(CONF_DEVICE_ID) # Pas utilisé pour le moment
-        self._attr_unique_id = self._device_id + "_seconds"
-        self._attr_native_value = 12
+    def __init__(self, hass, outdoor_entity, base_temp):
+        self._hass = hass
+        self._outdoor_entity = outdoor_entity
+        self._base_temp = base_temp
+        self._attr_name = "DJU Jour"
+        self._attr_unit_of_measurement = "°C"
+        self._temperatures = []
+        self._state = 0
 
-    @property
-    def should_poll(self) -> bool:
-        """Do not poll for those entities"""
-        return False
+    async def async_added_to_hass(self):
+        async_track_time_interval(
+            self._hass, self.update_dju, SCAN_INTERVAL
+        )
 
-    @property
-    def icon(self) -> str | None:
-        return "mdi:timer-play"
+    async def update_dju(self, now):
+        state = self._hass.states.get(self._outdoor_entity)
+
+        if state and state.state not in ("unknown", "unavailable"):
+            temp = float(state.state)
+            self._temperatures.append(temp)
+
+        # garde uniquement 24h (144 mesures de 10 min)
+        if len(self._temperatures) > 144:
+            self._temperatures.pop(0)
+
+        if self._temperatures:
+            moyenne = statistics.mean(self._temperatures)
+            dju = max(0, self._base_temp - moyenne)
+            self._state = round(dju, 2)
+
+        self.async_write_ha_state()
 
     @property
-    def device_class(self) -> SensorDeviceClass | None:
-        return SensorDeviceClass.DURATION
-
-    @property
-    def state_class(self) -> SensorStateClass | None:
-        return SensorStateClass.MEASUREMENT
-
-    @property
-    def native_unit_of_measurement(self) -> str | None:
-        return UnitOfTime.SECONDS
+    def state(self):
+        return self._state
